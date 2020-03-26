@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"peterdekok.nl/gotools/config"
 	"peterdekok.nl/gotools/logger"
-	"peterdekok.nl/gotools/trap"
 	"peterdekok.nl/gotools/router/handler"
 	"peterdekok.nl/gotools/router/tls"
+	"peterdekok.nl/gotools/trap"
 	"strings"
 	"time"
 )
@@ -33,6 +33,11 @@ type RestConfig struct {
 
 type Router struct {
 	*httprouter.Router
+
+	SpaHandler http.Handler
+	DistHandler http.Handler
+	DistPrefix string
+	RouterPrefix string
 }
 
 var (
@@ -46,19 +51,42 @@ func init() {
 }
 
 func New() *Router {
-	r := httprouter.New()
+	rtr := httprouter.New()
 
-	r.RedirectTrailingSlash = true
+	rtr.RedirectTrailingSlash = true
 
-	r.MethodNotAllowed = handler.ErrorHandlerFactory("verb not allowed", 405)
-	r.NotFound = handler.ErrorHandlerFactory("route not found", 404)
+	rtr.MethodNotAllowed = handler.ErrorHandlerFactory("verb not allowed", 405)
+	rtr.NotFound = handler.ErrorHandlerFactory("route not found", 404)
 
-	return &Router{r}
+	return &Router{Router: rtr}
+}
+
+func NewSPA(spaHandler, distHandler http.Handler) *Router {
+	rtr := New()
+
+	rtr.SpaHandler = spaHandler
+	rtr.DistHandler = distHandler
+	rtr.DistPrefix = "dist"
+	rtr.RouterPrefix = "api"
+
+	return rtr
 }
 
 func (rtr *Router) Serve() {
 	// Link the main parts (frontend and API)
-	http.Handle("/", rtr.requestLogger())
+	routerPrefix := "/" + strings.Trim(rtr.RouterPrefix, "/")
+
+	http.Handle(strings.TrimRight(routerPrefix, "/") + "/", http.StripPrefix(routerPrefix, rtr.requestLogger()))
+
+	if rtr.DistHandler != nil {
+		distPrefix := "/" + strings.Trim(rtr.DistPrefix, "/")
+
+		http.Handle(strings.TrimRight(distPrefix, "/") + "/", http.StripPrefix(distPrefix, rtr.DistHandler))
+	}
+
+	if rtr.SpaHandler != nil {
+		http.Handle("/", rtr.SpaHandler)
+	}
 
 	// Initialize the server
 	addr := fmt.Sprintf("%v:%v", cnf.Listen, cnf.Port)
