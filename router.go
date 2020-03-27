@@ -34,10 +34,18 @@ type RestConfig struct {
 type Router struct {
 	*httprouter.Router
 
+	// Catchall for SPA (e.g.: index.html)
 	SpaHandler   http.Handler
+
+	// Dist folder (for static files like js, css, images, etc.)
 	DistHandler  http.Handler
 	DistPrefix   string
+
+	// Prefix for router (API, websocket, custom go handlers, etc.)
 	RouterPrefix string
+
+	// Handlers for specific handlers that should be accessible outside dist/router (e.g.: favicon.ico)
+	StaticRootHandlers map[string]http.Handler
 }
 
 var (
@@ -58,7 +66,11 @@ func New() *Router {
 	rtr.MethodNotAllowed = handler.ErrorHandlerFactory("verb not allowed", 405)
 	rtr.NotFound = handler.ErrorHandlerFactory("route not found", 404)
 
-	return &Router{Router: rtr}
+	return &Router{
+		Router: rtr,
+
+		StaticRootHandlers: make(map[string]http.Handler),
+	}
 }
 
 func NewSPA(spaHandler, distHandler http.Handler) *Router {
@@ -68,6 +80,8 @@ func NewSPA(spaHandler, distHandler http.Handler) *Router {
 	rtr.DistHandler = distHandler
 	rtr.DistPrefix = "dist"
 	rtr.RouterPrefix = "api"
+
+	rtr.StaticRootHandlers["/favicon.ico"] = distHandler
 
 	return rtr
 }
@@ -86,6 +100,10 @@ func (rtr *Router) Serve() {
 
 	if rtr.SpaHandler != nil {
 		http.Handle("/", requestLogger(rtr.SpaHandler))
+	}
+
+	for p, h := range rtr.StaticRootHandlers {
+		http.Handle("/"+strings.TrimLeft(p, "/"), http.StripPrefix("/", requestLogger(h)))
 	}
 
 	// Initialize the server
