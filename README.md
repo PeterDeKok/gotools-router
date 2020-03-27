@@ -1,5 +1,7 @@
 # router
-Wrapper around the go [httprouter](https://github.com/julienschmidt/httprouter)
+Wrapper around Julien Schmidt's [httprouter](https://github.com/julienschmidt/httprouter).
+
+This package supports SPAs out of the box.
 
 # Install
 ```bash

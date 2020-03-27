@@ -34,9 +34,9 @@ type RestConfig struct {
 type Router struct {
 	*httprouter.Router
 
-	SpaHandler http.Handler
-	DistHandler http.Handler
-	DistPrefix string
+	SpaHandler   http.Handler
+	DistHandler  http.Handler
+	DistPrefix   string
 	RouterPrefix string
 }
 
@@ -76,16 +76,16 @@ func (rtr *Router) Serve() {
 	// Link the main parts (frontend and API)
 	routerPrefix := "/" + strings.Trim(rtr.RouterPrefix, "/")
 
-	http.Handle(strings.TrimRight(routerPrefix, "/") + "/", http.StripPrefix(routerPrefix, rtr.requestLogger()))
+	http.Handle(strings.TrimRight(routerPrefix, "/")+"/", http.StripPrefix(routerPrefix, rtr.requestLogger()))
 
 	if rtr.DistHandler != nil {
 		distPrefix := "/" + strings.Trim(rtr.DistPrefix, "/")
 
-		http.Handle(strings.TrimRight(distPrefix, "/") + "/", http.StripPrefix(distPrefix, rtr.DistHandler))
+		http.Handle(strings.TrimRight(distPrefix, "/")+"/", http.StripPrefix(distPrefix, requestLogger(rtr.DistHandler)))
 	}
 
 	if rtr.SpaHandler != nil {
-		http.Handle("/", rtr.SpaHandler)
+		http.Handle("/", requestLogger(rtr.SpaHandler))
 	}
 
 	// Initialize the server
@@ -188,6 +188,10 @@ func BasicAuth(h httprouter.Handle) httprouter.Handle {
 }
 
 func (rtr *Router) requestLogger() http.Handler {
+	return requestLogger(rtr)
+}
+
+func requestLogger(wrapped http.Handler) http.Handler {
 	level, err := logrus.ParseLevel(cnf.RequestLogLevel)
 
 	if err != nil && len(cnf.RequestLogLevel) > 0 {
@@ -198,6 +202,7 @@ func (rtr *Router) requestLogger() http.Handler {
 		// Log the request if applicable
 		if level >= logrus.ErrorLevel {
 			l := log.WithFields(logrus.Fields{
+				"method":        r.Method,
 				"time":          time.Now().Format("2006-01-02 15:04:05"),
 				"uri":           r.RequestURI,
 				"contentlength": r.ContentLength,
@@ -213,7 +218,7 @@ func (rtr *Router) requestLogger() http.Handler {
 				if level >= logrus.DebugLevel {
 					// Don't directly log from the headers
 					// printHeaders() will strip away known credentials,
-					// when more credentials are expected, replace those as well!
+					// when more credentials are expected, those should be replaced as well!
 					l = l.WithFields(logrus.Fields{
 						"headers": printHeaders(r.Header),
 					})
@@ -247,7 +252,7 @@ func (rtr *Router) requestLogger() http.Handler {
 		}
 
 		// Delegate request to the given handler
-		rtr.ServeHTTP(w, r)
+		wrapped.ServeHTTP(w, r)
 	})
 }
 
