@@ -18,21 +18,8 @@ import (
 	"time"
 )
 
-type RestConfig struct {
-	Listen string
-	Port   int
-
-	Cert string
-	Priv string
-
-	User string
-	Pass string
-
-	RequestLogLevel string
-}
-
 type Router struct {
-	*httprouter.Router
+	Routable
 
 	// Catchall for SPA (e.g.: index.html)
 	SpaHandler   http.Handler
@@ -48,6 +35,101 @@ type Router struct {
 	StaticRootHandlers map[string]http.Handler
 }
 
+type HttpRouter struct {
+	*httprouter.Router
+}
+
+type RestConfig struct {
+	Listen string
+	Port   int
+
+	Cert string
+	Priv string
+
+	User string
+	Pass string
+
+	RequestLogLevel string
+}
+
+type SPAConfig struct {
+	SpaHandler http.Handler
+	DistHandler http.Handler
+
+	DistPrefix string
+	RouterPrefix string
+
+	StaticRootHandlers map[string]http.Handler
+}
+
+type Routable interface {
+	// ServeHTTP will propagate to the nearest actual router
+	ServeHTTP(w http.ResponseWriter, r *http.Request)
+
+	// GET is a shortcut for router.Handle(http.MethodGet, path, handle)
+	GET(path string, handle httprouter.Handle)
+
+	// HEAD is a shortcut for router.Handle(http.MethodHead, path, handle)
+	HEAD(path string, handle httprouter.Handle)
+
+	// OPTIONS is a shortcut for router.Handle(http.MethodOptions, path, handle)
+	OPTIONS(path string, handle httprouter.Handle)
+
+	// POST is a shortcut for router.Handle(http.MethodPost, path, handle)
+	POST(path string, handle httprouter.Handle)
+
+	// PUT is a shortcut for router.Handle(http.MethodPut, path, handle)
+	PUT(path string, handle httprouter.Handle)
+
+	// PATCH is a shortcut for router.Handle(http.MethodPatch, path, handle)
+	PATCH(path string, handle httprouter.Handle)
+
+	// DELETE is a shortcut for router.Handle(http.MethodDelete, path, handle)
+	DELETE(path string, handle httprouter.Handle)
+
+	// Handle registers a new request handle with the given path and method.
+	//
+	// For GET, POST, PUT, PATCH and DELETE requests the respective shortcut
+	// functions can be used.
+	//
+	// This function is intended for bulk loading and to allow the usage of less
+	// frequently used, non-standardized or custom methods (e.g. for internal
+	// communication with a proxy).
+	Handle(method, path string, handle httprouter.Handle)
+
+	// Handler is an adapter which allows the usage of an http.Handler as a
+	// request handle.
+	// The Params are available in the request context under ParamsKey.
+	Handler(method, path string, handler http.Handler)
+
+	// HandlerFunc is an adapter which allows the usage of an http.HandlerFunc as a
+	// request handle.
+	HandlerFunc(method, path string, handler http.HandlerFunc)
+
+	// ServeFiles serves files from the given file system root.
+	// The path must end with "/*filepath", files are then served from the local
+	// path /defined/root/dir/*filepath.
+	// For example if root is "/etc" and *filepath is "passwd", the local file
+	// "/etc/passwd" would be served.
+	// Internally a http.FileServer is used, therefore http.NotFound is used instead
+	// of the Router's NotFound handler.
+	// To use the operating system's file system implementation,
+	// use http.Dir:
+	//     router.ServeFiles("/src/*filepath", http.Dir("/var/www"))
+	ServeFiles(path string, root http.FileSystem)
+
+	// Lookup allows the manual lookup of a method + path combo.
+	// This is e.g. useful to build a framework around this router.
+	// If the path was found, it returns the handle function and the path parameter
+	// values. Otherwise the third return value indicates whether a redirection to
+	// the same path with an extra / without the trailing slash should be performed.
+	Lookup(method, path string) (httprouter.Handle, httprouter.Params, bool)
+
+	Prefix(prefix string) *PrefixRouter
+
+	PrefixFunc(prefix string, fn func(rr Routable)) *PrefixRouter
+}
+
 var (
 	log logger.Logger
 	cnf = &RestConfig{}
@@ -59,7 +141,7 @@ func init() {
 }
 
 func New() *Router {
-	rtr := httprouter.New()
+	rtr := &HttpRouter{httprouter.New()}
 
 	rtr.RedirectTrailingSlash = true
 
@@ -67,21 +149,43 @@ func New() *Router {
 	rtr.NotFound = handler.ErrorHandlerFactory("route not found", 404)
 
 	return &Router{
-		Router: rtr,
+		Routable: rtr,
 
 		StaticRootHandlers: make(map[string]http.Handler),
 	}
 }
 
-func NewSPA(spaHandler, distHandler http.Handler) *Router {
+func NewSPA(spaConfig SPAConfig) *Router {
 	rtr := New()
 
-	rtr.SpaHandler = spaHandler
-	rtr.DistHandler = distHandler
-	rtr.DistPrefix = "dist"
-	rtr.RouterPrefix = "api"
+	if spaConfig.SpaHandler != nil {
+		rtr.SpaHandler = spaConfig.SpaHandler
+	}
 
-	rtr.StaticRootHandlers["/favicon.ico"] = distHandler
+	if spaConfig.DistHandler != nil {
+		rtr.DistHandler = spaConfig.DistHandler
+		rtr.StaticRootHandlers["/favicon.ico"] = spaConfig.DistHandler
+	}
+
+	if len(spaConfig.DistPrefix) > 0 {
+		rtr.DistPrefix = spaConfig.DistPrefix
+	} else {
+		rtr.DistPrefix = "dist"
+	}
+
+	if len(spaConfig.RouterPrefix) > 0 {
+		rtr.RouterPrefix = spaConfig.RouterPrefix
+	} else {
+		rtr.RouterPrefix = "api"
+	}
+
+	if spaConfig.StaticRootHandlers != nil {
+		for k, h := range spaConfig.StaticRootHandlers {
+			rtr.StaticRootHandlers[k] = h
+		}
+	}
+
+	rtr.Routable = rtr.Routable.Prefix(rtr.RouterPrefix)
 
 	return rtr
 }
@@ -90,7 +194,7 @@ func (rtr *Router) Serve() {
 	// Link the main parts (frontend and API)
 	routerPrefix := "/" + strings.Trim(rtr.RouterPrefix, "/")
 
-	http.Handle(strings.TrimRight(routerPrefix, "/")+"/", http.StripPrefix(routerPrefix, rtr.requestLogger()))
+	http.Handle(strings.TrimRight(routerPrefix, "/")+"/", rtr.requestLogger())
 
 	if rtr.DistHandler != nil {
 		distPrefix := "/" + strings.Trim(rtr.DistPrefix, "/")
@@ -170,43 +274,32 @@ func (rtr *Router) Serve() {
 	}
 }
 
-func BasicAuth(h httprouter.Handle) httprouter.Handle {
-	requiredUser := cnf.User
-	requiredPass := cnf.Pass
+func (rtr *Router) Prefix(prefix string) *PrefixRouter {
+	return NewPrefixRouter(rtr, prefix)
+}
 
-	if len(requiredUser) < 6 || len(requiredPass) < 20 {
-		err := errors.New("failed to protect route with basic auth")
+func (rtr *Router) PrefixFunc(prefix string, fn func(rr Routable)) *PrefixRouter {
+	pr := rtr.Prefix(prefix)
 
-		log.WithError(err).Error("User should be at least 6 chars and pass at least 20")
+	fn(pr)
 
-		panic(err)
-	}
-
-	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		// Get the Basic Authentication credentials
-		user, password, hasAuth := r.BasicAuth()
-
-		if hasAuth && user == requiredUser && password == requiredPass {
-			// Delegate request to the given handle
-			h(w, r, ps)
-		} else {
-			if hasAuth {
-				log.WithFields(logrus.Fields{
-					"uri":  r.RequestURI,
-					"ip":   r.RemoteAddr,
-					"user": user,
-				}).Error("Basic Auth failed: Invalid credentials")
-			}
-
-			// Request Basic Authentication otherwise
-			w.Header().Set("WWW-Authenticate", "Basic realm=Restricted")
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		}
-	}
+	return pr
 }
 
 func (rtr *Router) requestLogger() http.Handler {
 	return requestLogger(rtr)
+}
+
+func (hr *HttpRouter) Prefix(prefix string) *PrefixRouter {
+	return NewPrefixRouter(hr, prefix)
+}
+
+func (hr *HttpRouter) PrefixFunc(prefix string, fn func(rr Routable)) *PrefixRouter {
+	pr := hr.Prefix(prefix)
+
+	fn(pr)
+
+	return pr
 }
 
 func requestLogger(wrapped http.Handler) http.Handler {
@@ -272,6 +365,41 @@ func requestLogger(wrapped http.Handler) http.Handler {
 		// Delegate request to the given handler
 		wrapped.ServeHTTP(w, r)
 	})
+}
+
+func BasicAuth(h httprouter.Handle) httprouter.Handle {
+	requiredUser := cnf.User
+	requiredPass := cnf.Pass
+
+	if len(requiredUser) < 6 || len(requiredPass) < 20 {
+		err := errors.New("failed to protect route with basic auth")
+
+		log.WithError(err).Error("User should be at least 6 chars and pass at least 20")
+
+		panic(err)
+	}
+
+	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		// Get the Basic Authentication credentials
+		user, password, hasAuth := r.BasicAuth()
+
+		if hasAuth && user == requiredUser && password == requiredPass {
+			// Delegate request to the given handle
+			h(w, r, ps)
+		} else {
+			if hasAuth {
+				log.WithFields(logrus.Fields{
+					"uri":  r.RequestURI,
+					"ip":   r.RemoteAddr,
+					"user": user,
+				}).Error("Basic Auth failed: Invalid credentials")
+			}
+
+			// Request Basic Authentication otherwise
+			w.Header().Set("WWW-Authenticate", "Basic realm=Restricted")
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		}
+	}
 }
 
 func printHeaders(headers http.Header) http.Header {
