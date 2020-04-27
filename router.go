@@ -149,7 +149,7 @@ var (
 
 func init() {
 	log = logger.New("router")
-	config.Add(&struct{ Rest *RestConfig }{cnf})
+	config.Singleton().Add(&struct{ Rest *RestConfig }{cnf})
 }
 
 func New() *Router {
@@ -403,7 +403,7 @@ func requestLogger(wrapped http.Handler) http.Handler {
 	})
 }
 
-func BasicAuth(h httprouter.Handle) httprouter.Handle {
+func BasicAuth() Middleware {
 	requiredUser := cnf.User
 	requiredPass := cnf.Pass
 
@@ -415,44 +415,49 @@ func BasicAuth(h httprouter.Handle) httprouter.Handle {
 		panic(err)
 	}
 
-	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		// Get the Basic Authentication credentials
-		user, password, hasAuth := r.BasicAuth()
+	return func(h httprouter.Handle) httprouter.Handle {
 
-		if hasAuth && user == requiredUser && password == requiredPass {
-			// Delegate request to the given handle
-			h(w, r, ps)
-		} else {
-			if hasAuth {
-				log.WithFields(logrus.Fields{
-					"uri":  r.RequestURI,
-					"ip":   r.RemoteAddr,
-					"user": user,
-				}).Error("Basic Auth failed: Invalid credentials")
+		return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+			// Get the Basic Authentication credentials
+			user, password, hasAuth := r.BasicAuth()
+
+			if hasAuth && user == requiredUser && password == requiredPass {
+				// Delegate request to the given handle
+				h(w, r, ps)
+			} else {
+				if hasAuth {
+					log.WithFields(logrus.Fields{
+						"uri":  r.RequestURI,
+						"ip":   r.RemoteAddr,
+						"user": user,
+					}).Error("Basic Auth failed: Invalid credentials")
+				}
+
+				// Request Basic Authentication otherwise
+				w.Header().Set("WWW-Authenticate", "Basic realm=Restricted")
+				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 			}
-
-			// Request Basic Authentication otherwise
-			w.Header().Set("WWW-Authenticate", "Basic realm=Restricted")
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		}
 	}
 }
 
-func AuthorizationHeader(t TokenSource, h httprouter.Handle) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		authHeader := r.Header.Get("Authorization")
+func AuthorizationHeader(t TokenSource) Middleware {
+	return func(h httprouter.Handle) httprouter.Handle {
+		return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+			authHeader := r.Header.Get("Authorization")
 
-		if strings.EqualFold(fmt.Sprintf("Bearer %s", t()), authHeader) {
-			h(w, r, ps)
-		} else {
-			if len(authHeader) > 0 {
-				log.WithFields(logrus.Fields{
-					"uri":  r.RequestURI,
-					"ip":   r.RemoteAddr,
-				}).Error("Auth header failed: Invalid token")
+			if strings.EqualFold(fmt.Sprintf("Bearer %s", t()), authHeader) {
+				h(w, r, ps)
+			} else {
+				if len(authHeader) > 0 {
+					log.WithFields(logrus.Fields{
+						"uri": r.RequestURI,
+						"ip":  r.RemoteAddr,
+					}).Error("Auth header failed: Invalid token")
+				}
+
+				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 			}
-
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		}
 	}
 }

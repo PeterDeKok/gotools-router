@@ -7,7 +7,7 @@ require (
 	github.com/julienschmidt/httprouter v1.3.0
 	github.com/markbates/pkger v0.15.1
 	github.com/sirupsen/logrus v1.4.2
-	peterdekok.nl/gotools/config v0.0.1
-	peterdekok.nl/gotools/logger v0.0.2
+	peterdekok.nl/gotools/config v1.0.0
+	peterdekok.nl/gotools/logger v0.0.3
 	peterdekok.nl/gotools/trap v0.0.3
 )
