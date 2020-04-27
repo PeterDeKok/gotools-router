@@ -1,23 +1,29 @@
 package router
 
 import (
+	"context"
 	"github.com/julienschmidt/httprouter"
 	"net/http"
 	"strings"
 )
 
+type Middleware func(wrapped httprouter.Handle) httprouter.Handle
+
 type PrefixRouter struct {
 	Routable
 
 	prefix string
+
+	middleware Middleware
 }
 
-func NewPrefixRouter(r Routable, prefix string) *PrefixRouter {
+func NewPrefixRouter(r Routable, prefix string, middleware Middleware) *PrefixRouter {
 	prefix = strings.TrimRight("/"+strings.Trim(prefix, "/"), "/")
 
 	return &PrefixRouter{
-		Routable: r,
-		prefix:   prefix,
+		Routable:   r,
+		prefix:     prefix,
+		middleware: middleware,
 	}
 }
 
@@ -27,79 +33,37 @@ func (pr *PrefixRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // GET is a shortcut for router.Handle(http.MethodGet, path, handle)
 func (pr *PrefixRouter) GET(path string, handle httprouter.Handle) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.GET(path, handle)
+	pr.Handle(http.MethodGet, path, handle)
 }
 
 // HEAD is a shortcut for router.Handle(http.MethodHead, path, handle)
 func (pr *PrefixRouter) HEAD(path string, handle httprouter.Handle) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.HEAD(path, handle)
+	pr.Handle(http.MethodHead, path, handle)
 }
 
 // OPTIONS is a shortcut for router.Handle(http.MethodOptions, path, handle)
 func (pr *PrefixRouter) OPTIONS(path string, handle httprouter.Handle) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.OPTIONS(path, handle)
+	pr.Handle(http.MethodOptions, path, handle)
 }
 
 // POST is a shortcut for router.Handle(http.MethodPost, path, handle)
 func (pr *PrefixRouter) POST(path string, handle httprouter.Handle) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.POST(path, handle)
+	pr.Handle(http.MethodPost, path, handle)
 }
 
 // PUT is a shortcut for router.Handle(http.MethodPut, path, handle)
 func (pr *PrefixRouter) PUT(path string, handle httprouter.Handle) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.PUT(path, handle)
+	pr.Handle(http.MethodPut, path, handle)
 }
 
 // PATCH is a shortcut for router.Handle(http.MethodPatch, path, handle)
 func (pr *PrefixRouter) PATCH(path string, handle httprouter.Handle) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.PATCH(path, handle)
+	pr.Handle(http.MethodPatch, path, handle)
 }
 
 // DELETE is a shortcut for router.Handle(http.MethodDelete, path, handle)
 func (pr *PrefixRouter) DELETE(path string, handle httprouter.Handle) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.DELETE(path, handle)
+	pr.Handle(http.MethodDelete, path, handle)
 }
 
 // Handle registers a new request handle with the given path and method.
@@ -117,6 +81,10 @@ func (pr *PrefixRouter) Handle(method, path string, handle httprouter.Handle) {
 		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
 	}
 
+	if pr.middleware != nil {
+		handle = pr.middleware(handle)
+	}
+
 	pr.Routable.Handle(method, path, handle)
 }
 
@@ -124,25 +92,20 @@ func (pr *PrefixRouter) Handle(method, path string, handle httprouter.Handle) {
 // request handle.
 // The Params are available in the request context under ParamsKey.
 func (pr *PrefixRouter) Handler(method, path string, handler http.Handler) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.Handler(method, path, handler)
+	pr.Handle(method, path, func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+		if len(p) > 0 {
+			ctx := r.Context()
+			ctx = context.WithValue(ctx, httprouter.ParamsKey, p)
+			r = r.WithContext(ctx)
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // HandlerFunc is an adapter which allows the usage of an http.HandlerFunc as a
 // request handle.
 func (pr *PrefixRouter) HandlerFunc(method, path string, handler http.HandlerFunc) {
-	if len(path) == 0 {
-		path = pr.prefix
-	} else {
-		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
-	}
-
-	pr.Routable.HandlerFunc(method, path, handler)
+	pr.Handler(method, path, handler)
 }
 
 // ServeFiles serves files from the given file system root.
@@ -156,6 +119,10 @@ func (pr *PrefixRouter) HandlerFunc(method, path string, handler http.HandlerFun
 // use http.Dir:
 //     router.ServeFiles("/src/*filepath", http.Dir("/var/www"))
 func (pr *PrefixRouter) ServeFiles(path string, root http.FileSystem) {
+	if pr.middleware != nil {
+		panic("ServeFiles not available with middleware")
+	}
+
 	if len(path) == 0 {
 		path = pr.prefix
 	} else {
@@ -177,13 +144,19 @@ func (pr *PrefixRouter) Lookup(method, path string) (httprouter.Handle, httprout
 		path = pr.prefix + "/" + strings.TrimLeft(path, "/")
 	}
 
-	return pr.Routable.Lookup(method, path)
+	handle, params, redirectTrailing := pr.Routable.Lookup(method, path)
+
+	if pr.middleware != nil {
+		handle = pr.middleware(handle)
+	}
+
+	return handle, params, redirectTrailing
 }
 
 // Wraps the current prefix router and adds a prefix to the path
 // for all handlers registered through this wrapper.
 func (pr *PrefixRouter) Prefix(prefix string) *PrefixRouter {
-	return NewPrefixRouter(pr, prefix)
+	return NewPrefixRouter(pr, prefix, nil)
 }
 
 // Wraps the current prefix router and adds a prefix to the path
@@ -196,6 +169,12 @@ func (pr *PrefixRouter) PrefixFunc(prefix string, fn func(rr Routable)) *PrefixR
 	fn(ppr)
 
 	return ppr
+}
+
+// Wraps the current prefix router and adds middleware
+// for all handlers registered through this wrapper.
+func (pr *PrefixRouter) Middleware(middleware Middleware) *PrefixRouter {
+	return NewPrefixRouter(pr, "", middleware)
 }
 
 // The wrapper (prefix router) is passed to a callback,

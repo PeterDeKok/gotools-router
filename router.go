@@ -22,11 +22,11 @@ type Router struct {
 	Routable
 
 	// Catchall for SPA (e.g.: index.html)
-	SpaHandler   http.Handler
+	SpaHandler http.Handler
 
 	// Dist folder (for static files like js, css, images, etc.)
-	DistHandler  http.Handler
-	DistPrefix   string
+	DistHandler http.Handler
+	DistPrefix  string
 
 	// Prefix for router (API, websocket, custom go handlers, etc.)
 	RouterPrefix string
@@ -53,14 +53,16 @@ type RestConfig struct {
 }
 
 type SPAConfig struct {
-	SpaHandler http.Handler
+	SpaHandler  http.Handler
 	DistHandler http.Handler
 
-	DistPrefix string
+	DistPrefix   string
 	RouterPrefix string
 
 	StaticRootHandlers map[string]http.Handler
 }
+
+type TokenSource func() string
 
 type Routable interface {
 	// ServeHTTP will propagate to the nearest actual router
@@ -125,9 +127,19 @@ type Routable interface {
 	// the same path with an extra / without the trailing slash should be performed.
 	Lookup(method, path string) (httprouter.Handle, httprouter.Params, bool)
 
+	// Prefix wraps the current router and adds middleware
+	// for all handlers registered through this wrapper.
 	Prefix(prefix string) *PrefixRouter
 
+	// PrefixFunc wraps the current router and adds middleware
+	// for all handlers registered through this wrapper.
+	// The wrapper is passed to a callback, to create a nice grouped
+	// structure to the code.
 	PrefixFunc(prefix string, fn func(rr Routable)) *PrefixRouter
+
+	// Middleware Wraps the current router and adds middleware
+	// for all handlers registered through this wrapper.
+	Middleware(middleware Middleware) *PrefixRouter
 }
 
 var (
@@ -274,10 +286,16 @@ func (rtr *Router) Serve() {
 	}
 }
 
+// Prefix wraps the current router and adds middleware
+// for all handlers registered through this wrapper.
 func (rtr *Router) Prefix(prefix string) *PrefixRouter {
-	return NewPrefixRouter(rtr, prefix)
+	return NewPrefixRouter(rtr, prefix, nil)
 }
 
+// PrefixFunc wraps the current router and adds middleware
+// for all handlers registered through this wrapper.
+// The wrapper is passed to a callback, to create a nice grouped
+// structure to the code.
 func (rtr *Router) PrefixFunc(prefix string, fn func(rr Routable)) *PrefixRouter {
 	pr := rtr.Prefix(prefix)
 
@@ -286,20 +304,38 @@ func (rtr *Router) PrefixFunc(prefix string, fn func(rr Routable)) *PrefixRouter
 	return pr
 }
 
+// Middleware Wraps the current router and adds middleware
+// for all handlers registered through this wrapper.
+func (rtr *Router) Middleware(middleware Middleware) *PrefixRouter {
+	return NewPrefixRouter(rtr, "", middleware)
+}
+
 func (rtr *Router) requestLogger() http.Handler {
 	return requestLogger(rtr)
 }
 
+// Prefix wraps the current router and adds middleware
+// for all handlers registered through this wrapper.
 func (hr *HttpRouter) Prefix(prefix string) *PrefixRouter {
-	return NewPrefixRouter(hr, prefix)
+	return NewPrefixRouter(hr, prefix, nil)
 }
 
+// PrefixFunc wraps the current router and adds middleware
+// for all handlers registered through this wrapper.
+// The wrapper is passed to a callback, to create a nice grouped
+// structure to the code.
 func (hr *HttpRouter) PrefixFunc(prefix string, fn func(rr Routable)) *PrefixRouter {
 	pr := hr.Prefix(prefix)
 
 	fn(pr)
 
 	return pr
+}
+
+// Middleware Wraps the current router and adds middleware
+// for all handlers registered through this wrapper.
+func (hr *HttpRouter) Middleware(middleware Middleware) *PrefixRouter {
+	return NewPrefixRouter(hr, "", middleware)
 }
 
 func requestLogger(wrapped http.Handler) http.Handler {
@@ -397,6 +433,25 @@ func BasicAuth(h httprouter.Handle) httprouter.Handle {
 
 			// Request Basic Authentication otherwise
 			w.Header().Set("WWW-Authenticate", "Basic realm=Restricted")
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		}
+	}
+}
+
+func AuthorizationHeader(t TokenSource, h httprouter.Handle) httprouter.Handle {
+	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
+		authHeader := r.Header.Get("Authorization")
+
+		if strings.EqualFold(fmt.Sprintf("Bearer %s", t()), authHeader) {
+			h(w, r, ps)
+		} else {
+			if len(authHeader) > 0 {
+				log.WithFields(logrus.Fields{
+					"uri":  r.RequestURI,
+					"ip":   r.RemoteAddr,
+				}).Error("Auth header failed: Invalid token")
+			}
+
 			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		}
 	}

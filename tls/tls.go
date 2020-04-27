@@ -17,12 +17,12 @@ type Watcher struct {
 	certFile string
 	keyFile  string
 
-	cert *tls.Certificate
-	NotAfter time.Time
+	cert      *tls.Certificate
+	NotAfter  time.Time
 	NotBefore time.Time
 
 	watcher *fsnotify.Watcher
-	wg sync.WaitGroup
+	wg      sync.WaitGroup
 
 	TLSConfig *tls.Config
 }
@@ -30,8 +30,8 @@ type Watcher struct {
 var (
 	log logger.Logger
 
-	ErrNoCert = errors.New("no certificate found")
-	ErrInvalidCert = errors.New("certificate invalid")
+	ErrNoCert        = errors.New("no certificate found")
+	ErrInvalidCert   = errors.New("certificate invalid")
 	ErrFailedWatcher = errors.New("failed to create file watcher")
 )
 
@@ -194,7 +194,7 @@ func (w *Watcher) run() {
 
 	for {
 		select {
-		case event, ok = <- w.watcher.Events:
+		case event, ok = <-w.watcher.Events:
 			if ok {
 				log.Infof("File changed: %s", event)
 
