@@ -59,7 +59,7 @@ func (sb *SpaBox) IndexHandler() http.Handler {
 		//f, err := sb.box.Open(sb.cnf.PathToIndex)
 
 		if err != nil {
-			log.WithError(err).Error("Failed to open index")
+			log.WithField("path", pathToIndex).WithError(err).Error("Failed to open index")
 
 			http.NotFound(w, r)
 
@@ -69,7 +69,7 @@ func (sb *SpaBox) IndexHandler() http.Handler {
 		d, err := f.Stat()
 
 		if err != nil {
-			log.WithError(err).Error("Failed to get file info for index")
+			log.WithField("path", pathToIndex).WithError(err).Error("Failed to get file info for index")
 
 			http.NotFound(w, r)
 
@@ -107,7 +107,7 @@ func JsonError(w http.ResponseWriter, _ *http.Request, err error, code int) erro
 			Code:    code,
 			Message: "Server error",
 		})
-	} else if x, ok := err.(json.Unmarshaler); ok {
+	} else if x, ok := err.(json.Marshaler); ok {
 		b, ierr = json.Marshal(x)
 	} else {
 		b, ierr = json.Marshal(JsonErr{

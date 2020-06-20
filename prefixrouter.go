@@ -2,31 +2,50 @@ package router
 
 import (
 	"context"
+	"errors"
 	"github.com/julienschmidt/httprouter"
 	"net/http"
+	"nhooyr.io/websocket"
+	"peterdekok.nl/gotools/router/auth"
+	"peterdekok.nl/gotools/router/writer"
 	"strings"
 )
 
+// TODO Docs
 type Middleware func(wrapped httprouter.Handle) httprouter.Handle
 
+// TODO Docs
+type WebsocketHandler func(ctx context.Context, conn *websocket.Conn, r *http.Request) error
+
+// TODO Docs
 type PrefixRouter struct {
 	Routable
 
 	prefix string
 
 	middleware Middleware
+
+	auth *auth.Auth
 }
 
+// TODO Docs
 func NewPrefixRouter(r Routable, prefix string, middleware Middleware) *PrefixRouter {
 	prefix = strings.TrimRight("/"+strings.Trim(prefix, "/"), "/")
 
-	return &PrefixRouter{
+	pr := &PrefixRouter{
 		Routable:   r,
 		prefix:     prefix,
 		middleware: middleware,
 	}
+
+	if parent, ok :=  r.(*PrefixRouter); ok {
+		pr.auth = parent.auth
+	}
+
+	return pr
 }
 
+// TODO Docs
 func (pr *PrefixRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pr.Routable.ServeHTTP(w, r)
 }
@@ -183,4 +202,95 @@ func (pr *PrefixRouter) Group(fn func(rr Routable)) *PrefixRouter {
 	fn(pr)
 
 	return pr
+}
+
+// TODO Docs
+func (pr *PrefixRouter) WS(path string, wh WebsocketHandler) {
+	pr.HandlerFunc(http.MethodGet, path, func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			//InsecureSkipVerify: false, // TODO ???
+			InsecureSkipVerify: true, // TODO ???
+			CompressionMode:    websocket.CompressionDisabled,
+		})
+
+		if err != nil {
+			log.WithError(err).Error("Failed to create websocket listener")
+
+			return
+		}
+
+		defer func() {
+			err := conn.Close(websocket.StatusInternalError, "Unexpected close")
+
+			if err != nil && err.Error() != "failed to close WebSocket: already wrote close" {
+				log.WithError(err).Error("Failed to close websocket connection")
+			}
+		}()
+
+		// TODO Any checks on validity of ws should be done here...
+		// TODO How to handle authentication ???
+
+		if err := wh(ctx, conn, r); err != nil {
+			log.WithError(err).Error("Failed to handle websocket")
+		}
+	})
+}
+
+// TODO Docs
+func (pr *PrefixRouter) EnableAuth(ur auth.UserRepository) (*PrefixRouter, *auth.Auth, error) {
+	if pr.auth != nil {
+		return pr, pr.auth, nil
+	}
+
+	a, err := auth.New(ur, cnf.Auth.Bearer.AccessTokenSecret, cnf.Auth.Bearer.RefreshTokenSecret)
+
+	if err != nil {
+		return pr, nil, err
+	}
+
+	pr.auth = a
+
+	pr.Prefix("auth").Group(func(rr Routable) {
+		rr.POST("login", a.Login)
+	})
+
+	return pr, a, nil
+}
+
+// TODO Docs
+func (pr *PrefixRouter) AuthMiddleware() *PrefixRouter {
+	if pr.auth == nil {
+		err := errors.New("auth middleware not enabled")
+
+		log.WithError(err).Error("Failed to register auth middleware")
+
+		panic(err)
+	}
+
+	mw := func(h httprouter.Handle) httprouter.Handle {
+		return func(w http.ResponseWriter, r *http.Request, p httprouter.Params) {
+			// This check SHOULD be redundant, but this middleware should protect a route.
+			// If for whatever reason auth is no longer set,
+			// it should NOT allow a protected route to be unprotected
+			if pr.auth == nil {
+				_ = writer.NewJsonError(http.StatusUnauthorized, nil, errors.New("running auth middleware without enabling it")).Write(w, log)
+
+				return
+			}
+
+			t, err := pr.auth.IsValid(r)
+
+			if err != nil {
+				_ = writer.NewJsonError(http.StatusUnauthorized, nil, err).Write(w, log)
+
+				return
+			}
+
+			h(w, r.WithContext(context.WithValue(r.Context(), "Token", t)), p)
+		}
+	}
+
+	return pr.Middleware(mw)
 }

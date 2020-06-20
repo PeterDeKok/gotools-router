@@ -11,13 +11,16 @@ import (
 	"net/http"
 	"peterdekok.nl/gotools/config"
 	"peterdekok.nl/gotools/logger"
+	"peterdekok.nl/gotools/router/auth"
 	"peterdekok.nl/gotools/router/handler"
 	"peterdekok.nl/gotools/router/tls"
 	"peterdekok.nl/gotools/trap"
+	"sort"
 	"strings"
 	"time"
 )
 
+// TODO Docs
 type Router struct {
 	Routable
 
@@ -33,37 +36,72 @@ type Router struct {
 
 	// Handlers for specific handlers that should be accessible outside dist/router (e.g.: favicon.ico)
 	StaticRootHandlers map[string]http.Handler
+
+	// TODO Docs
+	CorsConfig *CorsConfig
 }
 
+// TODO Docs
 type HttpRouter struct {
 	*httprouter.Router
 }
 
+// TODO Docs
+type server struct {
+	s http.Handler
+
+	h func(h http.Header, r *http.Request) error
+}
+
+// TODO Docs
 type RestConfig struct {
 	Listen string
 	Port   int
 
-	Cert string
-	Priv string
-
-	User string
-	Pass string
-
 	RequestLogLevel string
+
+	SSL struct {
+		Cert string
+		Priv string
+	}
+
+	Auth struct {
+		Basic struct {
+			User string
+			Pass string
+		}
+
+		Bearer struct {
+			AccessTokenSecret  string
+			RefreshTokenSecret string
+		}
+	}
 }
 
+// TODO Docs
 type SPAConfig struct {
 	SpaHandler  http.Handler
 	DistHandler http.Handler
+	StaticRootHandlers map[string]http.Handler
 
 	DistPrefix   string
 	RouterPrefix string
 
-	StaticRootHandlers map[string]http.Handler
+	RootURIDist []string
+
+	CorsConfig *CorsConfig
 }
 
+// TODO Docs
+type CorsConfig struct {
+	AllowedOrigin  []string
+	AllowedHeaders []string
+}
+
+// TODO Docs
 type TokenSource func() string
 
+// TODO Docs
 type Routable interface {
 	// ServeHTTP will propagate to the nearest actual router
 	ServeHTTP(w http.ResponseWriter, r *http.Request)
@@ -140,6 +178,15 @@ type Routable interface {
 	// Middleware Wraps the current router and adds middleware
 	// for all handlers registered through this wrapper.
 	Middleware(middleware Middleware) *PrefixRouter
+
+	// TODO Docs
+	WS(path string, wh WebsocketHandler)
+
+	// TODO Docs
+	EnableAuth(ur auth.UserRepository) (*PrefixRouter, *auth.Auth, error)
+
+	// TODO Docs
+	AuthMiddleware() *PrefixRouter
 }
 
 var (
@@ -147,28 +194,37 @@ var (
 	cnf = &RestConfig{}
 )
 
+// TODO Docs
 func init() {
 	log = logger.New("router")
 	config.Singleton().Add(&struct{ Rest *RestConfig }{cnf})
 }
 
-func New() *Router {
-	rtr := &HttpRouter{httprouter.New()}
+// TODO Docs
+func New(corsConfig *CorsConfig) *Router {
+	rtbl := &HttpRouter{httprouter.New()}
 
-	rtr.RedirectTrailingSlash = true
+	rtbl.RedirectTrailingSlash = true
 
-	rtr.MethodNotAllowed = handler.ErrorHandlerFactory("verb not allowed", 405)
-	rtr.NotFound = handler.ErrorHandlerFactory("route not found", 404)
+	rtbl.MethodNotAllowed = handler.ErrorHandlerFactory("verb not allowed", 405)
+	rtbl.NotFound = handler.ErrorHandlerFactory("route not found", 404)
+
+	if corsConfig != nil {
+		sort.Strings(corsConfig.AllowedOrigin)
+	}
 
 	return &Router{
-		Routable: rtr,
+		Routable: rtbl,
 
 		StaticRootHandlers: make(map[string]http.Handler),
+
+		CorsConfig: corsConfig,
 	}
 }
 
+// TODO Docs
 func NewSPA(spaConfig SPAConfig) *Router {
-	rtr := New()
+	rtr := New(spaConfig.CorsConfig)
 
 	if spaConfig.SpaHandler != nil {
 		rtr.SpaHandler = spaConfig.SpaHandler
@@ -177,6 +233,12 @@ func NewSPA(spaConfig SPAConfig) *Router {
 	if spaConfig.DistHandler != nil {
 		rtr.DistHandler = spaConfig.DistHandler
 		rtr.StaticRootHandlers["/favicon.ico"] = spaConfig.DistHandler
+
+		if spaConfig.RootURIDist != nil {
+			for _, rootDistPath := range spaConfig.RootURIDist {
+				rtr.StaticRootHandlers[rootDistPath] = spaConfig.DistHandler
+			}
+		}
 	}
 
 	if len(spaConfig.DistPrefix) > 0 {
@@ -202,24 +264,24 @@ func NewSPA(spaConfig SPAConfig) *Router {
 	return rtr
 }
 
+// TODO Docs
 func (rtr *Router) Serve() {
-	// Link the main parts (frontend and API)
-	routerPrefix := "/" + strings.Trim(rtr.RouterPrefix, "/")
+	rtr.logHandles()
 
-	http.Handle(strings.TrimRight(routerPrefix, "/")+"/", rtr.requestLogger())
+	http.Handle(strings.TrimRight("/" + strings.Trim(rtr.RouterPrefix, "/"), "/")+"/", rtr)
 
 	if rtr.DistHandler != nil {
 		distPrefix := "/" + strings.Trim(rtr.DistPrefix, "/")
 
-		http.Handle(strings.TrimRight(distPrefix, "/")+"/", http.StripPrefix(distPrefix, requestLogger(rtr.DistHandler)))
+		http.Handle(strings.TrimRight(distPrefix, "/")+"/", http.StripPrefix(distPrefix, rtr.DistHandler))
 	}
 
 	if rtr.SpaHandler != nil {
-		http.Handle("/", requestLogger(rtr.SpaHandler))
+		http.Handle("/", rtr.SpaHandler)
 	}
 
 	for p, h := range rtr.StaticRootHandlers {
-		http.Handle("/"+strings.TrimLeft(p, "/"), http.StripPrefix("/", requestLogger(h)))
+		http.Handle("/"+strings.TrimLeft(p, "/"), http.StripPrefix("/", h))
 	}
 
 	// Initialize the server
@@ -227,8 +289,17 @@ func (rtr *Router) Serve() {
 
 	l := log.WithField("addr", addr)
 
+	hServer := &server{
+		s: http.DefaultServeMux,
+	}
+
+	if rtr.CorsConfig != nil {
+		hServer.h = rtr.CorsConfig.handleCors
+	}
+
 	server := &http.Server{
 		Addr: addr,
+		Handler: requestLogger(hServer),
 	}
 
 	// Cleanly shutdown server
@@ -239,11 +310,11 @@ func (rtr *Router) Serve() {
 	})
 
 	// Boot the server
-	if len(cnf.Cert) > 0 || len(cnf.Priv) > 0 {
+	if len(cnf.SSL.Cert) > 0 || len(cnf.SSL.Priv) > 0 {
 		l = l.WithField("TLS", "Yes")
 
 		// Watch for changes in the certificate
-		tlsWatcher, err := tls.NewWatcher(cnf.Cert, cnf.Priv)
+		tlsWatcher, err := tls.NewWatcher(cnf.SSL.Cert, cnf.SSL.Priv)
 
 		if err != nil {
 			l.WithError(err).Error("Failed to setup TLS certificate watcher")
@@ -268,7 +339,7 @@ func (rtr *Router) Serve() {
 			panic(err)
 		}
 
-		if err := server.ListenAndServeTLS(cnf.Cert, cnf.Priv); err != nil && err != http.ErrServerClosed {
+		if err := server.ListenAndServeTLS(cnf.SSL.Cert, cnf.SSL.Priv); err != nil && err != http.ErrServerClosed {
 			l.WithError(err).Error("server error")
 
 			panic(err)
@@ -310,8 +381,45 @@ func (rtr *Router) Middleware(middleware Middleware) *PrefixRouter {
 	return NewPrefixRouter(rtr, "", middleware)
 }
 
-func (rtr *Router) requestLogger() http.Handler {
-	return requestLogger(rtr)
+// TODO Docs
+func (rtr *Router) EnableAuth(ur auth.UserRepository) (*PrefixRouter, *auth.Auth, error) {
+	return NewPrefixRouter(rtr, "", nil).EnableAuth(ur)
+}
+
+// TODO Docs
+func (rtr *Router) AuthMiddleware() *PrefixRouter {
+	return NewPrefixRouter(rtr, "", nil).AuthMiddleware()
+}
+
+// TODO Docs
+func (rtr *Router) logHandles() {
+	// Link the main parts (frontend and API)
+	routerPrefix := strings.TrimRight("/" + strings.Trim(rtr.RouterPrefix, "/"), "/")+"/"
+	distPrefix := strings.TrimRight("/" + strings.Trim(rtr.DistPrefix, "/"), "/")+"/"
+
+	if (rtr.DistHandler != nil || rtr.SpaHandler != nil) && (routerPrefix == distPrefix || routerPrefix == "/") {
+		log.WithField("prefix", routerPrefix).WithField("status", true).Error("Serving API")
+	} else {
+		log.WithField("prefix", routerPrefix).WithField("status", true).Debug("Serving API")
+	}
+
+	if rtr.DistHandler != nil && (distPrefix == routerPrefix || distPrefix == "/") {
+		log.WithField("prefix", distPrefix).WithField("status", rtr.DistHandler != nil).Error("Serving DIST")
+	} else {
+		log.WithField("prefix", distPrefix).WithField("status", rtr.DistHandler != nil).Debug("Serving DIST")
+	}
+
+	log.WithField("prefix", "/").WithField("status", rtr.SpaHandler != nil).Debug("Serving SPA")
+
+	for p := range rtr.StaticRootHandlers {
+		prefix := "/"+strings.TrimLeft(p, "/")
+
+		if prefix == routerPrefix || prefix == distPrefix || prefix == "/" {
+			log.WithField("prefix", prefix).WithField("status", true).Error("Serving STATIC")
+		} else {
+			log.WithField("prefix", prefix).WithField("status", true).Debug("Serving STATIC")
+		}
+	}
 }
 
 // Prefix wraps the current router and adds middleware
@@ -338,6 +446,68 @@ func (hr *HttpRouter) Middleware(middleware Middleware) *PrefixRouter {
 	return NewPrefixRouter(hr, "", middleware)
 }
 
+// TODO Docs
+func (hr *HttpRouter) WS(path string, wh WebsocketHandler) {
+	NewPrefixRouter(hr, "", nil).WS(path, wh)
+}
+
+// TODO Docs
+func (hr *HttpRouter) EnableAuth(ur auth.UserRepository) (*PrefixRouter, *auth.Auth, error) {
+	return NewPrefixRouter(hr, "", nil).EnableAuth(ur)
+}
+
+// TODO Docs
+func (hr *HttpRouter) AuthMiddleware() *PrefixRouter {
+	return NewPrefixRouter(hr, "", nil).AuthMiddleware()
+}
+
+// TODO Docs
+func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.h != nil && s.h(w.Header(), r) != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+
+		return
+	}
+
+	s.s.ServeHTTP(w, r)
+}
+
+// TODO Docs
+func (corsConfig *CorsConfig) handleCors(h http.Header, r *http.Request) error {
+	o := r.Header.Get("Origin")
+
+	if len(corsConfig.AllowedOrigin) > 0 && len(o) == 0 {
+		log.Error("Request aborted: empty origin")
+
+		return errors.New("request aborted: empty origin")
+	} else {
+		if len(corsConfig.AllowedOrigin) == 1 && corsConfig.AllowedOrigin[0] == "*" {
+			h.Set("Access-Control-Allow-Origin", "*")
+		}
+
+		i := sort.SearchStrings(corsConfig.AllowedOrigin, o)
+		if i < len(corsConfig.AllowedOrigin) && corsConfig.AllowedOrigin[i] == o {
+			h.Set("Access-Control-Allow-Origin", o)
+		}
+	}
+
+	// Not all headers should be set on non pre-flight calls
+	if r.Method != http.MethodOptions {
+		return nil
+	}
+
+	// Ensure preflight caching can be busted correctly
+	h.Add("Vary", "Origin")
+	h.Add("Vary", "Access-Control-Request-Method")
+
+	// The method does not matter, so echo the requested method
+	h.Set("Access-Control-Allow-Methods", strings.ToUpper(r.Header.Get("Access-Control-Request-Method")))
+	h.Set("Access-Control-Allow-Headers", strings.Join(corsConfig.AllowedHeaders, ", "))
+
+	return nil
+}
+
+// TODO Docs
 func requestLogger(wrapped http.Handler) http.Handler {
 	level, err := logrus.ParseLevel(cnf.RequestLogLevel)
 
@@ -370,7 +540,7 @@ func requestLogger(wrapped http.Handler) http.Handler {
 						"headers": printHeaders(r.Header),
 					})
 
-					if level >= logrus.TraceLevel && r.Body != nil {
+					if level >= logrus.TraceLevel && r.Body != nil && r.Method != "OPTIONS" {
 						bodyBytes, err := ioutil.ReadAll(r.Body)
 
 						if err != nil {
@@ -390,7 +560,7 @@ func requestLogger(wrapped http.Handler) http.Handler {
 						l = l.WithField("body", string(bodyBytes))
 
 						// Also print using fmt, so the newlines will be better visible
-						fmt.Println("Body:\n" + string(bodyBytes) + "\n\n")
+						fmt.Println("Body:\n" + string(bodyBytes) + "\n")
 					}
 				}
 			}
@@ -403,9 +573,10 @@ func requestLogger(wrapped http.Handler) http.Handler {
 	})
 }
 
+// TODO Docs
 func BasicAuth() Middleware {
-	requiredUser := cnf.User
-	requiredPass := cnf.Pass
+	requiredUser := cnf.Auth.Basic.User
+	requiredPass := cnf.Auth.Basic.Pass
 
 	if len(requiredUser) < 6 || len(requiredPass) < 20 {
 		err := errors.New("failed to protect route with basic auth")
@@ -441,27 +612,7 @@ func BasicAuth() Middleware {
 	}
 }
 
-func AuthorizationHeader(t TokenSource) Middleware {
-	return func(h httprouter.Handle) httprouter.Handle {
-		return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-			authHeader := r.Header.Get("Authorization")
-
-			if strings.EqualFold(fmt.Sprintf("Bearer %s", t()), authHeader) {
-				h(w, r, ps)
-			} else {
-				if len(authHeader) > 0 {
-					log.WithFields(logrus.Fields{
-						"uri": r.RequestURI,
-						"ip":  r.RemoteAddr,
-					}).Error("Auth header failed: Invalid token")
-				}
-
-				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-			}
-		}
-	}
-}
-
+// TODO Docs
 func printHeaders(headers http.Header) http.Header {
 	newMap := make(http.Header)
 
