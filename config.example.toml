@@ -1,0 +1,36 @@
+[Logger]
+    # When the logger should also output to a file (as well as STDOUT)
+    #File="/home/mercury/log/mercury.log"
+
+[Rest]
+    # The ip and port to bind on
+    Listen="127.0.0.1"
+    Port=8080
+
+    # Log requests as they come in, the level signals the amount of info.
+    # error     Time, Request URI and content length
+    # info      All of the above and ip, user agent and referer
+    # debug     All of the above and headers (some known credentials are filtered, however should be tested thoroughly!!)
+    # trace     All of the above and body (!!! IMPORTANT SECURITY NOTE !!! Any input is logged, including passwords, tokens, etc.)
+    RequestLogLevel="info"
+
+    # Add TLS/SSL by uncommenting these lines
+    # This will enable HTTPS and disable HTTP
+    #[Rest.SSL]
+    #    Cert="/path/to/certificate/fullchain.pem"
+    #    Priv="/path/to/certificate/private.pem"
+
+    [Rest.Auth]
+        # Add Basic auth to protected routes
+        # Username should be at least 6 chars
+        # Password should be at least 20 chars
+        #[Rest.Auth.Basic]
+        #    User="user"
+        #    Pass="pass"
+
+        # Add Bearer token (JWT) auth to protected routes
+        # Access token secret should be at least 64 chars
+        # Refresh token secret should be at least 64 chars
+        [Rest.Auth.Bearer]
+            AccessTokenSecret="cypto.random.token.at.least.64.chars"
+            RefreshTokenSecret="cypto.random.token.at.least.64.chars"

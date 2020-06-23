@@ -541,6 +541,11 @@ func requestLogger(wrapped http.Handler) http.Handler {
 					})
 
 					if level >= logrus.TraceLevel && r.Body != nil && r.Method != "OPTIONS" {
+						// !!! IMPORTANT SECURITY NOTE !!!
+						// When this level is enabled, any input, including passwords, tokens, etc. are logged as well!
+						// No obfuscation is done like with header logging!!!
+						// !!! IMPORTANT SECURITY NOTE !!!
+
 						bodyBytes, err := ioutil.ReadAll(r.Body)
 
 						if err != nil {

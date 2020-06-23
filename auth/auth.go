@@ -91,7 +91,6 @@ func New(ur UserRepository, accessSecret, refreshSecret string) (*Auth, error) {
 	} else if len(accessSecret) < 64 {
 		err = errors.New("accessSecret too short")
 	} else if len(refreshSecret) < 64 {
-		fmt.Println(refreshSecret)
 		err = errors.New("refreshSecret too short")
 	}
 
@@ -310,8 +309,6 @@ func (jt JSONTime) MarshalJSON() ([]byte, error) {
 
 func ExtractTokenFromRequest(r *http.Request, t TokenType) string {
 	authHeader := r.Header.Get("Authorization")
-
-	fmt.Println(authHeader)
 
 	if len(t) > 0 {
 		tokenParts := strings.SplitN(authHeader, string(t)+" ", 2)
